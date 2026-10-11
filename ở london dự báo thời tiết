@@ -1,0 +1,125 @@
+"""Simple dependency-free Open-Meteo weather CLI.
+
+Usage:
+    python weather.py
+    python weather.py London
+"""
+
+import json
+import sys
+from datetime import date, datetime
+from urllib.parse import urlencode
+from urllib.request import urlopen
+
+
+FALLBACK = {
+    "location": "Tokyo, Japan",
+    "timezone": "Asia/Tokyo",
+    "current": {
+        "temperature_2m": 22,
+        "apparent_temperature": 22,
+        "relative_humidity_2m": 64,
+        "wind_speed_10m": 12,
+        "weather_code": 2,
+    },
+    "daily": {
+        "time": ["2026-09-17", "2026-09-18", "2026-09-19", "2026-09-20", "2026-09-21"],
+        "weather_code": [2, 1, 3, 61, 0],
+        "temperature_2m_max": [25, 27, 24, 22, 26],
+        "temperature_2m_min": [19, 20, 18, 17, 19],
+    },
+}
+
+CONDITIONS = {
+    0: "Clear sky",
+    1: "Mainly clear",
+    2: "Partly cloudy",
+    3: "Overcast",
+    45: "Foggy",
+    48: "Foggy",
+    51: "Light drizzle",
+    53: "Drizzle",
+    55: "Heavy drizzle",
+    61: "Light rain",
+    63: "Rain",
+    65: "Heavy rain",
+    71: "Light snow",
+    73: "Snow",
+    75: "Heavy snow",
+    80: "Rain showers",
+    81: "Rain showers",
+    82: "Heavy showers",
+    95: "Thunderstorm",
+    99: "Thunderstorm",
+}
+
+
+def fetch_json(url, params):
+    query = urlencode(params)
+    with urlopen(f"{url}?{query}", timeout=10) as response:
+        return json.load(response)
+
+
+def load_weather(city):
+    locations = fetch_json(
+        "https://geocoding-api.open-meteo.com/v1/search",
+        {"name": city, "count": 1, "language": "en", "format": "json"},
+    )
+    if not locations.get("results"):
+        raise ValueError(f"City not found: {city}")
+
+    place = locations["results"][0]
+    forecast = fetch_json(
+        "https://api.open-meteo.com/v1/forecast",
+        {
+            "latitude": place["latitude"],
+            "longitude": place["longitude"],
+            "current": (
+                "temperature_2m,relative_humidity_2m,apparent_temperature,"
+                "wind_speed_10m,weather_code"
+            ),
+            "daily": "weather_code,temperature_2m_max,temperature_2m_min",
+            "timezone": "auto",
+            "forecast_days": 5,
+        },
+    )
+    forecast["location"] = f'{place["name"]}, {place["country"]}'
+    return forecast
+
+
+def print_weather(data, fallback=False):
+    current = data["current"]
+    daily = data["daily"]
+    condition = CONDITIONS.get(current["weather_code"], "Mixed conditions")
+    print(f'\n{data["location"]}')
+    today = date.today()
+    print(f'{today:%A, %B} {today.day} · {data.get("timezone", "local time")}')
+    print(
+        f'\n{round(current["temperature_2m"])}°C · {condition}'
+        f'\nFeels like {round(current["apparent_temperature"])}°C'
+        f' · Humidity {current["relative_humidity_2m"]}%'
+        f' · Wind {round(current["wind_speed_10m"])} km/h'
+    )
+    print("\n5-day forecast")
+    for index, day in enumerate(daily["time"][:5]):
+        day_name = "Today" if index == 0 else datetime.fromisoformat(day).strftime("%a")
+        print(
+            f'  {day_name:<6} {round(daily["temperature_2m_max"][index])}°'
+            f' / {round(daily["temperature_2m_min"][index])}°'
+            f'  {CONDITIONS.get(daily["weather_code"][index], "Mixed conditions")}'
+        )
+    if fallback:
+        print("\nLive data unavailable; showing fallback data.")
+
+
+def main():
+    city = " ".join(sys.argv[1:]).strip() or "Tokyo"
+    try:
+        print_weather(load_weather(city))
+    except (OSError, ValueError, KeyError, json.JSONDecodeError) as error:
+        print_weather({**FALLBACK, "location": city if city != "Tokyo" else FALLBACK["location"]}, True)
+        print(f"\nCould not load live data: {error}", file=sys.stderr)
+
+
+if __name__ == "__main__":
+    main()
